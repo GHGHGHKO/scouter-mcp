@@ -60,4 +60,12 @@ class ConfigTest {
                 "SCOUTER_USER", "u", "SCOUTER_PASSWORD", "p", "SCOUTER_TZ", "UTC"));
         assertThat(c.zone()).isEqualTo(ZoneId.of("UTC"));
     }
+
+    @Test
+    void heapDumpDisabledByDefault() {
+        Config c = Config.fromEnv(Map.of(
+                "SCOUTER_COLLECTOR_HOST", "h", "SCOUTER_COLLECTOR_PORT", "6100",
+                "SCOUTER_USER", "u", "SCOUTER_PASSWORD", "p"));
+        assertThat(c.heapDumpEnabled()).isFalse();
+    }
 }

@@ -440,4 +440,83 @@ public final class Tools {
             throw new RuntimeException(e);
         }
     }
+
+    // The agent resolves download names under heapdump/ without sanitizing, so only plain hprof names pass.
+    private static final java.util.regex.Pattern HPROF_NAME =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_\\-][A-Za-z0-9_.\\-]*\\.hprof");
+    private static final java.util.regex.Pattern DUMP_SUFFIX = java.util.regex.Pattern.compile("[A-Za-z0-9_\\-]{0,40}");
+
+    public static String renderListHeapDumps(ScouterClient client, long objHash) {
+        Map<String, Long> files = client.listHeapDumps(objHash);
+        List<Map<String, Object>> rows = new ArrayList<>(files.size());
+        files.forEach((name, size) -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("fileName", name);
+            m.put("sizeBytes", size);
+            rows.add(m);
+        });
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("objHash", objHash);
+        result.put("count", rows.size());
+        result.put("files", rows);
+        return toJson(result);
+    }
+
+    public static String renderCreateHeapDump(ScouterClient client, long objHash, String suffix) {
+        String s = suffix == null ? "" : suffix.trim();
+        if (!DUMP_SUFFIX.matcher(s).matches()) {
+            throw new IllegalArgumentException("suffix must match [A-Za-z0-9_-]{0,40}");
+        }
+        String msg = client.createHeapDump(objHash, s.isEmpty() ? "" : "_" + s);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("objHash", objHash);
+        result.put("message", msg);
+        result.put("next", "list_heap_dumps to get the file name, then download_heap_dump");
+        return toJson(result);
+    }
+
+    public static String renderDownloadHeapDump(ScouterClient client, java.nio.file.Path dir, long objHash,
+                                                String fileName) {
+        if (fileName == null || !HPROF_NAME.matcher(fileName).matches()) {
+            throw new IllegalArgumentException("fileName must be a plain *.hprof name from list_heap_dumps");
+        }
+        Long expected = client.listHeapDumps(objHash).get(fileName);
+        if (expected == null) {
+            throw scouter.mcp.error.McpError.of(scouter.mcp.error.McpError.Code.NOT_FOUND,
+                    "no heap dump '" + fileName + "' on objHash " + objHash + "; call list_heap_dumps");
+        }
+        java.nio.file.Path target = dir.resolve(objHash + "-" + fileName);
+        try {
+            java.nio.file.Files.createDirectories(dir);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("cannot create " + dir + ": " + e.getMessage(), e);
+        }
+        if (java.nio.file.Files.exists(target)) {
+            throw new IllegalArgumentException("already downloaded: " + target);
+        }
+        long bytes = client.downloadHeapDump(objHash, fileName, target);
+        if (bytes != expected) {
+            try {
+                java.nio.file.Files.deleteIfExists(target);
+            } catch (java.io.IOException ignored) {
+                // Reported below either way.
+            }
+            throw scouter.mcp.error.McpError.of(scouter.mcp.error.McpError.Code.INTERNAL,
+                    "incomplete download: " + bytes + " of " + expected + " bytes; file removed");
+        }
+        // Path and size only: the hprof holds live customer data and must never enter the model context.
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("objHash", objHash);
+        result.put("localPath", target.toAbsolutePath().toString());
+        result.put("sizeBytes", bytes);
+        return toJson(result);
+    }
+
+    private static String toJson(Object value) {
+        try {
+            return MAPPER.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }

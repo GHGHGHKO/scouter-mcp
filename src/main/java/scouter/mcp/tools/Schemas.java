@@ -197,4 +197,36 @@ public final class Schemas {
           "required": ["gxid"]
         }
         """;
+
+    public static final String LIST_HEAP_DUMPS = """
+        {
+          "type": "object",
+          "properties": {
+            "objHash": {"type": "integer", "description": "Exact target object hash from list_objects (one pod)."}
+          },
+          "required": ["objHash"]
+        }
+        """;
+
+    public static final String CREATE_HEAP_DUMP = """
+        {
+          "type": "object",
+          "properties": {
+            "objHash": {"type": "integer", "description": "Exact target object hash from list_objects (one pod). No fuzzy targeting: a dump pauses that JVM."},
+            "suffix": {"type": "string", "description": "Optional file name suffix, [A-Za-z0-9_-]{0,40} (e.g. 'oom-check')."}
+          },
+          "required": ["objHash"]
+        }
+        """;
+
+    public static final String DOWNLOAD_HEAP_DUMP = """
+        {
+          "type": "object",
+          "properties": {
+            "objHash": {"type": "integer", "description": "Exact target object hash from list_objects (one pod)."},
+            "fileName": {"type": "string", "description": "A fileName exactly as returned by list_heap_dumps (*.hprof)."}
+          },
+          "required": ["objHash", "fileName"]
+        }
+        """;
 }

@@ -39,6 +39,8 @@ built locally), and fill in the credentials. For multiple collectors, see
 | `SCOUTER_TZ` | Time zone (e.g. `Asia/Seoul`) |
 | `SCOUTER_LOCALE` | User-facing message locale: `en` or `ko`. If unset, derived from the JVM default (Korean only when the JVM language is Korean, otherwise English) |
 | `SCOUTER_INCLUDE_BIND_PARAMS` | Operator kill-switch for SQL bind parameters in `get_xlog_detail` (default `true`). Set to `false` to strip bind params server-side regardless of the per-call argument — an LLM cannot re-enable them. Use when bind values may contain PII. |
+| `SCOUTER_HEAPDUMP_ENABLED` | Opt-in for `create_heap_dump` / `download_heap_dump` (default `false`). Must be the string `"true"`. Enable per collector, ideally only on dev/stg. |
+| `SCOUTER_HEAPDUMP_DIR` | Local directory for downloaded `.hprof` files (default `~/scouter-heapdump`) |
 
 ### Multiple collectors
 
@@ -77,7 +79,7 @@ two collectors at once. For multiple collectors — which usually differ in thei
 
 The AI then orchestrates across the collectors.
 
-## Tools (14)
+## Tools (17)
 
 | Name | Purpose | Key inputs |
 |---|---|---|
@@ -95,6 +97,24 @@ The AI then orchestrates across the collectors.
 | `list_threads` | JVM thread list (state histogram + top 50 by cpu) | `objNameLike`\|`objHash` (max 5 alive instances) |
 | `get_thread_detail` | Live thread of an ACTIVE transaction (stack/lock owner/current SQL) | `txid` (required, active), `id?`, `objNameLike`\|`objHash` |
 | `get_object_env` | Agent JVM system properties (secrets masked) | `objNameLike`\|`objHash`, `keyLike?` |
+| `list_heap_dumps` | `.hprof` files in an agent's `heapdump/` folder, with sizes | `objHash` |
+| `create_heap_dump` | Trigger a live-object heap dump on one agent JVM (opt-in) | `objHash`, `suffix?` |
+| `download_heap_dump` | Download one `.hprof` to `SCOUTER_HEAPDUMP_DIR` (opt-in) | `objHash`, `fileName` |
+
+### Heap dumps
+
+Uses the agent's built-in `OBJECT_CALL/LIST/DOWNLOAD_HEAP_DUMP` commands, relayed by the collector.
+
+1. `list_objects` to pick the exact `objHash` of one alive pod (no fuzzy targeting for heap dumps).
+2. `create_heap_dump` writes `heapdump/yyyymmdd-hhmmss_<suffix>.hprof` inside the pod. The JVM pauses
+   while it writes, and the agent rejects a second call within 10 seconds. On a large heap the call can
+   time out while the dump continues; check with `list_heap_dumps`.
+3. `download_heap_dump` streams the file (2MB chunks) to `SCOUTER_HEAPDUMP_DIR/<objHash>-<fileName>`.
+   It returns only the local path and size, and deletes the file if the size does not match the agent's.
+4. Open the file with Eclipse MAT, VisualVM, or a memory-analyzer MCP.
+
+There is no delete tool: dump files stay in the pod until removed (e.g. `kubectl exec ... rm`) or the
+pod restarts. The agent's 2GB+ download path has an int overflow; such files may fail the size check.
 
 ### Fuzzy targeting (`objNameLike`)
 
@@ -165,7 +185,8 @@ structured stderr logs (`key=value`) remain English for a stable contract and lo
 
 ## Security notes
 
-- Read-only against the Collector (no write commands are exposed).
+- Read-only against the Collector, except the opt-in heap dump tools (`SCOUTER_HEAPDUMP_ENABLED`).
+  `create_heap_dump` is never retried on session expiry, so one call dumps the JVM at most once.
 - Credentials are injected via environment variables only (never in files or arguments as plaintext).
   Prefer a least-privilege / read-only Scouter account.
 - **Transport is plaintext TCP** (the Scouter protocol has no TLS): the SHA-256 password digest, the
@@ -176,6 +197,9 @@ structured stderr logs (`key=value`) remain English for a stable contract and lo
   bind values (`SQLActiveBindVar`) obey the same kill-switch.
 - `get_object_env` **unconditionally** masks values of keys matching password/secret/token/credential/
   private — a server-side policy the LLM cannot opt out of.
+- Heap dumps contain live application data (often PII). `download_heap_dump` never returns file
+  contents to the model, and file names are restricted to plain `*.hprof` names because the agent
+  does not sanitize download paths. Restrict permissions on the local file and delete it after analysis.
 - stdout is reserved for JSON-RPC, so all logs go to stderr only.
 
 ## License / Notice

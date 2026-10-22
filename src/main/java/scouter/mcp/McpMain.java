@@ -122,6 +122,9 @@ public final class McpMain {
               are the identity. "app (instance)" is the right short form.
             """;
 
+    private static final McpSchema.ToolAnnotations WRITES =
+            McpSchema.ToolAnnotations.builder().readOnlyHint(false).destructiveHint(false).build();
+
     private static McpSchema.Tool readOnlyTool(McpJsonMapper jm, String name, String description, String schema) {
         return McpSchema.Tool.builder(name)
                 .description(description)
@@ -695,13 +698,38 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool listHeapDumps = readOnlyTool(jsonMapper, "list_heap_dumps",
+                "List heap dump (*.hprof) files already written in one agent's heapdump/ folder, with sizes. objHash required (from list_objects).",
+                Schemas.LIST_HEAP_DUMPS);
+        McpServerFeatures.SyncToolSpecification listHeapDumpsSpec = heapDumpSpec(listHeapDumps, false, config,
+                arguments -> Tools.renderListHeapDumps(client, requireLong(arguments, "objHash")));
+
+        McpSchema.Tool createHeapDump = McpSchema.Tool.builder("create_heap_dump")
+                .description("Trigger a live-object heap dump on ONE agent JVM (HotSpot dumpHeap). The JVM pauses while the file is written and the file can be as large as the used heap, so only call this when the user explicitly asked for a heap dump of that pod. Disabled unless the operator set SCOUTER_HEAPDUMP_ENABLED=true. The agent rejects calls within 10s of the previous one.")
+                .inputSchema(jsonMapper, Schemas.CREATE_HEAP_DUMP)
+                .annotations(WRITES)
+                .build();
+        McpServerFeatures.SyncToolSpecification createHeapDumpSpec = heapDumpSpec(createHeapDump, true, config,
+                arguments -> Tools.renderCreateHeapDump(client, requireLong(arguments, "objHash"),
+                        asString(arguments, "suffix")));
+
+        McpSchema.Tool downloadHeapDump = McpSchema.Tool.builder("download_heap_dump")
+                .description("Download one *.hprof from an agent to the local SCOUTER_HEAPDUMP_DIR (default ~/scouter-heapdump). Returns only the local path and size - the file holds live customer data, never read its contents into the conversation. Disabled unless SCOUTER_HEAPDUMP_ENABLED=true.")
+                .inputSchema(jsonMapper, Schemas.DOWNLOAD_HEAP_DUMP)
+                .annotations(WRITES)
+                .build();
+        McpServerFeatures.SyncToolSpecification downloadHeapDumpSpec = heapDumpSpec(downloadHeapDump, true, config,
+                arguments -> Tools.renderDownloadHeapDump(client, config.heapDumpDir(),
+                        requireLong(arguments, "objHash"), asString(arguments, "fileName")));
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
                         getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
                         listAlertsSpec, getActiveServicesSpec, listThreadsSpec, getThreadDetailSpec,
-                        getObjectEnvSpec, getSummarySpec, getCounterStatSpec)
+                        getObjectEnvSpec, getSummarySpec, getCounterStatSpec,
+                        listHeapDumpsSpec, createHeapDumpSpec, downloadHeapDumpSpec)
                 .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 
@@ -712,6 +740,33 @@ public final class McpMain {
                 client.close();
             }
         }));
+    }
+
+    private static McpServerFeatures.SyncToolSpecification heapDumpSpec(
+            McpSchema.Tool tool, boolean gated, Config config,
+            java.util.function.Function<Map<String, Object>, String> render) {
+        return McpServerFeatures.SyncToolSpecification.builder()
+                .tool(tool)
+                .callHandler((exchange, request) -> {
+                    try {
+                        if (gated && !config.heapDumpEnabled()) {
+                            throw scouter.mcp.error.McpError.of(scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    tool.name() + " is disabled; the operator must set SCOUTER_HEAPDUMP_ENABLED=true");
+                        }
+                        String json = render.apply(request.arguments());
+                        log.info("heapdump tool={} args={}", tool.name(), request.arguments());
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
     }
 
     private static String asString(Map<String, Object> arguments, String key) {

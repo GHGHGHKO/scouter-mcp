@@ -308,4 +308,43 @@ class ToolsContractTest {
 
         assertThat(json).contains("client-side");
     }
+
+    @Test
+    void downloadHeapDumpRejectsPathTraversalNames() {
+        ScouterClient client = mock(ScouterClient.class);
+        java.nio.file.Path dir = java.nio.file.Path.of("unused");
+        for (String bad : List.of("../../etc/passwd.hprof", "a/b.hprof", "x.txt", ".hprof", "")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                    () -> Tools.renderDownloadHeapDump(client, dir, 1L, bad))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+
+    @Test
+    void downloadHeapDumpWritesFileAndReturnsOnlyPath(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+            throws Exception {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.listHeapDumps(7L)).thenReturn(java.util.Map.of("20261021-101010.hprof", 3L));
+        when(client.downloadHeapDump(eq(7L), eq("20261021-101010.hprof"), any())).thenAnswer(inv -> {
+            java.nio.file.Files.write(inv.getArgument(2), new byte[]{1, 2, 3});
+            return 3L;
+        });
+        String json = Tools.renderDownloadHeapDump(client, dir, 7L, "20261021-101010.hprof");
+        assertThat(json).contains("\"sizeBytes\":3").contains("7-20261021-101010.hprof");
+        assertThat(java.nio.file.Files.size(dir.resolve("7-20261021-101010.hprof"))).isEqualTo(3L);
+    }
+
+    @Test
+    void downloadHeapDumpRemovesTruncatedFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.listHeapDumps(7L)).thenReturn(java.util.Map.of("a.hprof", 10L));
+        when(client.downloadHeapDump(eq(7L), eq("a.hprof"), any())).thenAnswer(inv -> {
+            java.nio.file.Files.write(inv.getArgument(2), new byte[]{1});
+            return 1L;
+        });
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> Tools.renderDownloadHeapDump(client, dir, 7L, "a.hprof"))
+                .hasMessageContaining("incomplete");
+        assertThat(java.nio.file.Files.exists(dir.resolve("7-a.hprof"))).isFalse();
+    }
 }

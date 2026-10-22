@@ -80,6 +80,9 @@
     { "name": "get_active_services", "description": "List services currently running on an agent." },
     { "name": "list_threads", "description": "List JVM threads for an agent, with state histogram and top CPU rows." },
     { "name": "get_thread_detail", "description": "Live thread detail for an active transaction (stack trace, lock owner, current SQL)." },
-    { "name": "get_object_env", "description": "Read an agent's JVM system properties (secrets masked)." }
+    { "name": "get_object_env", "description": "Read an agent's JVM system properties (secrets masked)." },
+    { "name": "list_heap_dumps", "description": "List .hprof files in an agent's heapdump folder." },
+    { "name": "create_heap_dump", "description": "Trigger a heap dump on one agent JVM (opt-in)." },
+    { "name": "download_heap_dump", "description": "Download one .hprof to a local directory (opt-in)." }
   ]
 }

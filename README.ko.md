@@ -37,6 +37,8 @@ collector 하나만 쓸 때는 [GitHub Release](../../releases)의 `.mcpb` 번�
 | `SCOUTER_TZ` | 시간대 (예: `Asia/Seoul`) |
 | `SCOUTER_LOCALE` | 사용자 메시지 로케일: `en` 또는 `ko`. 미지정 시 JVM 기본값에서 유도(JVM 언어가 한국어일 때만 한국어, 그 외 영어) |
 | `SCOUTER_INCLUDE_BIND_PARAMS` | `get_xlog_detail`의 SQL 바인드 파라미터 운영자 kill-switch(기본 `true`). `false`면 호출 파라미터와 무관하게 서버측에서 바인드 값을 제거한다(LLM이 다시 켤 수 없음). 바인드 값에 개인정보가 있을 수 있을 때 사용. |
+| `SCOUTER_HEAPDUMP_ENABLED` | `create_heap_dump`/`download_heap_dump` 사용 여부(기본 `false`). 문자열 `"true"`로 지정해야 한다. collector별로 켜고, 가능하면 dev/stg에서만 켠다. |
+| `SCOUTER_HEAPDUMP_DIR` | 다운로드한 `.hprof` 저장 경로(기본 `~/scouter-heapdump`) |
 
 ### 다중 Collector
 
@@ -74,7 +76,7 @@ collector 하나만 쓸 때는 [GitHub Release](../../releases)의 `.mcpb` 번�
 
 교차 조합은 AI가 오케스트레이션한다.
 
-## 도구 (14종)
+## 도구 (17종)
 
 | 이름 | 용도 | 주요 입력 |
 |---|---|---|
@@ -92,6 +94,24 @@ collector 하나만 쓸 때는 [GitHub Release](../../releases)의 `.mcpb` 번�
 | `list_threads` | JVM 스레드 목록(상태 히스토그램 + cpu 상위 50) | `objNameLike`\|`objHash`(alive 인스턴스 최대 5) |
 | `get_thread_detail` | 활성 트랜잭션 스레드 상세(스택/락 소유자/현재 SQL) | `txid`(필수, 활성), `id?`, `objNameLike`\|`objHash` |
 | `get_object_env` | 에이전트 JVM 시스템 프로퍼티(비밀키 마스킹) | `objNameLike`\|`objHash`, `keyLike?` |
+| `list_heap_dumps` | 에이전트 `heapdump/` 폴더의 `.hprof` 목록과 크기 | `objHash` |
+| `create_heap_dump` | 에이전트 JVM 하나에 live 객체 heap dump 실행(opt-in) | `objHash`, `suffix?` |
+| `download_heap_dump` | `.hprof` 하나를 `SCOUTER_HEAPDUMP_DIR`로 다운로드(opt-in) | `objHash`, `fileName` |
+
+### Heap dump
+
+에이전트에 내장된 `OBJECT_CALL/LIST/DOWNLOAD_HEAP_DUMP` 명령을 collector 경유로 호출한다.
+
+1. `list_objects`로 살아 있는 pod 하나의 정확한 `objHash`를 고른다(heap dump는 퍼지 타깃 미지원).
+2. `create_heap_dump`가 pod 안에 `heapdump/yyyymmdd-hhmmss_<suffix>.hprof`를 만든다. 쓰는 동안 JVM이
+   멈추고, 에이전트는 10초 안의 재호출을 거부한다. heap이 크면 응답은 타임아웃돼도 덤프는 계속
+   진행되므로 `list_heap_dumps`로 확인한다.
+3. `download_heap_dump`가 파일을 2MB 단위로 받아 `SCOUTER_HEAPDUMP_DIR/<objHash>-<fileName>`에 저장한다.
+   로컬 경로와 크기만 반환하고, 크기가 에이전트 목록과 다르면 파일을 지운다.
+4. Eclipse MAT, VisualVM, memory-analyzer MCP 등으로 연다.
+
+삭제 도구는 없다. 덤프 파일은 직접 지우거나(`kubectl exec ... rm`) pod가 재시작될 때까지 pod에 남는다.
+에이전트 다운로드 코드에 int 오버플로가 있어 2GB 이상 파일은 크기 검증에서 실패할 수 있다.
 
 ### 퍼지 타깃 지정 (`objNameLike`)
 
@@ -158,7 +178,8 @@ HTTP 메서드를 위치와 무관하게 추출하고(`GET x`, `x POST`, 붙여�
 
 ## 보안 주의
 
-- Collector에 대해 읽기 전용으로만 동작한다(쓰기 커맨드 미노출).
+- Collector에 대해 읽기 전용으로 동작한다. 예외는 opt-in heap dump 도구(`SCOUTER_HEAPDUMP_ENABLED`)뿐이며,
+  `create_heap_dump`는 세션 만료 시에도 재시도하지 않아 한 번 호출에 최대 한 번만 덤프한다.
 - 자격증명은 환경변수로만 주입한다(파일/인자에 평문 금지). 최소권한/읽기전용 계정 사용을 권장한다.
 - **전송은 평문 TCP**다(Scouter 프로토콜에 TLS 없음): SHA-256 비밀번호 다이제스트, 세션 토큰,
   모든 XLog/카운터 데이터가 암호화 없이 오간다. 신뢰 네트워크 내부에서만 사용하거나 SSH/VPN으로
@@ -168,6 +189,9 @@ HTTP 메서드를 위치와 무관하게 추출하고(`GET x`, `x POST`, 붙여�
   `get_thread_detail`의 실시간 바인드 값(`SQLActiveBindVar`)도 같은 kill-switch를 따른다.
 - `get_object_env`는 password/secret/token/credential/private에 해당하는 키의 값을 **무조건**
   마스킹한다(LLM이 해제할 수 없는 서버측 정책).
+- heap dump에는 실제 애플리케이션 데이터(개인정보 포함 가능)가 들어 있다. `download_heap_dump`는 파일
+  내용을 모델에 반환하지 않으며, 에이전트가 다운로드 경로를 검증하지 않으므로 파일명은 `*.hprof`
+  형식만 허용한다. 로컬 파일 권한을 제한하고 분석 후 삭제하라.
 - stdout은 JSON-RPC 전용이므로 모든 로그는 stderr로만 출력한다.
 
 ## 라이선스/고지

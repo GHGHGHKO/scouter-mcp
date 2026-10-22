@@ -1367,6 +1367,108 @@ public final class TcpScouterClient implements ScouterClient {
     }
 
     @Override
+    public Map<String, Long> listHeapDumps(long objHash) {
+        return SessionRetry.execute(() -> listHeapDumpsImpl(objHash), this::relogin);
+    }
+
+    private Map<String, Long> listHeapDumpsImpl(long objHash) {
+        // OBJECT_LIST_HEAP_DUMP: {objHash} -> MapPack{name: ListValue, size: ListValue}; no reply at all
+        // when the agent has never dumped (no heapdump/ folder).
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            Pack p = tcp.getSingle(RequestCmd.OBJECT_LIST_HEAP_DUMP, heapDumpParam(objHash));
+            Map<String, Long> files = new java.util.TreeMap<>();
+            if (p instanceof MapPack mp && mp.getList("name") != null) {
+                ListValue names = mp.getList("name");
+                ListValue sizes = mp.getList("size");
+                for (int i = 0; i < names.size(); i++) {
+                    files.put(names.getString(i), sizes.getLong(i));
+                }
+            }
+            return files;
+        } catch (Exception e) {
+            if (isEof(e)) {
+                return Map.of();
+            }
+            throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
+    @Override
+    public String createHeapDump(long objHash, String suffix) {
+        // No SessionRetry: a replayed request would dump the JVM twice.
+        MapPack param = heapDumpParam(objHash);
+        param.put("time", System.currentTimeMillis());
+        param.put("fName", suffix == null ? "" : suffix);
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            Pack p = tcp.getSingle(RequestCmd.OBJECT_CALL_HEAP_DUMP, param);
+            if (!(p instanceof MapPack mp)) {
+                throw McpError.of(McpError.Code.NOT_FOUND, "agent did not answer the heap dump request");
+            }
+            if (!mp.getBoolean("success")) {
+                throw McpError.of(McpError.Code.INTERNAL, mp.getText("msg"));
+            }
+            return mp.getText("msg");
+        } catch (McpError e) {
+            throw e;
+        } catch (Exception e) {
+            if (isEof(e) || e.getCause() instanceof java.net.SocketTimeoutException) {
+                // dumpHeap on a large heap outlives the relay timeout while the agent keeps writing.
+                return "no reply before timeout; the dump may still be in progress - check list_heap_dumps";
+            }
+            throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
+    @Override
+    public long downloadHeapDump(long objHash, String fileName, java.nio.file.Path target) {
+        MapPack param = heapDumpParam(objHash);
+        param.put("fileName", fileName);
+        java.nio.file.Path part = target.resolveSibling(target.getFileName() + ".part");
+        java.util.concurrent.atomic.AtomicLong written = new java.util.concurrent.atomic.AtomicLong();
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try (java.io.OutputStream os = java.nio.file.Files.newOutputStream(part,
+                java.nio.file.StandardOpenOption.CREATE_NEW)) {
+            tcp.process(RequestCmd.OBJECT_DOWNLOAD_HEAP_DUMP, param, in -> {
+                byte[] chunk = in.readBlob();
+                os.write(chunk);
+                written.addAndGet(chunk.length);
+            });
+        } catch (Exception e) {
+            deleteQuietly(part);
+            throw McpError.of(McpError.Code.INTERNAL, "heap dump download failed: " + e.getMessage());
+        } finally {
+            TcpProxy.close(tcp);
+        }
+        try {
+            java.nio.file.Files.move(part, target);
+        } catch (java.io.IOException e) {
+            deleteQuietly(part);
+            throw McpError.of(McpError.Code.INTERNAL, "cannot move downloaded file: " + e.getMessage());
+        }
+        return written.get();
+    }
+
+    private static MapPack heapDumpParam(long objHash) {
+        MapPack param = new MapPack();
+        param.put(ParamConstant.OBJ_HASH, (int) objHash);
+        return param;
+    }
+
+    private static void deleteQuietly(java.nio.file.Path path) {
+        try {
+            java.nio.file.Files.deleteIfExists(path);
+        } catch (java.io.IOException ignored) {
+            // Best effort: a leftover .part never shadows a real file name.
+        }
+    }
+
+    @Override
     public SummaryResult getSummary(String category, long fromMillis, long toMillis,
                                     String objType, Long objHash, String objNameLike) {
         return SessionRetry.execute(

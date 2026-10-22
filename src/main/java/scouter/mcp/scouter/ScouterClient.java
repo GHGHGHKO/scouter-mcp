@@ -15,7 +15,9 @@ import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
 import scouter.mcp.scouter.dto.XlogSummaryResult;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 public interface ScouterClient extends AutoCloseable {
 
@@ -68,6 +70,16 @@ public interface ScouterClient extends AutoCloseable {
     // The window is split per calendar day; id hashes are text-resolved after merging.
     SummaryResult getSummary(String category, long fromMillis, long toMillis,
                              String objType, Long objHash, String objNameLike);
+
+    // Heap dump files in the agent's heapdump/ folder (OBJECT_LIST_HEAP_DUMP): file name -> size in bytes.
+    Map<String, Long> listHeapDumps(long objHash);
+
+    // Trigger HotSpotDiagnosticMXBean.dumpHeap(live=true) on the agent (OBJECT_CALL_HEAP_DUMP).
+    // The file lands in the pod; returns the agent's message.
+    String createHeapDump(long objHash, String suffix);
+
+    // Stream an agent hprof (OBJECT_DOWNLOAD_HEAP_DUMP, 2MB blobs) into target; returns bytes written.
+    long downloadHeapDump(long objHash, String fileName, Path target);
 
     @Override
     void close();

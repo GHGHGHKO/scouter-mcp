@@ -1,5 +1,6 @@
 package scouter.mcp.config;
 
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.Locale;
 import java.util.Map;
@@ -13,9 +14,11 @@ public final class Config {
     private final ZoneId zone;
     private final Locale locale;
     private final boolean bindParamsEnabled;
+    private final boolean heapDumpEnabled;
+    private final Path heapDumpDir;
 
     private Config(String host, int port, String user, String password, ZoneId zone, Locale locale,
-                   boolean bindParamsEnabled) {
+                   boolean bindParamsEnabled, boolean heapDumpEnabled, Path heapDumpDir) {
         this.host = host;
         this.port = port;
         this.user = user;
@@ -23,6 +26,8 @@ public final class Config {
         this.zone = zone;
         this.locale = locale;
         this.bindParamsEnabled = bindParamsEnabled;
+        this.heapDumpEnabled = heapDumpEnabled;
+        this.heapDumpDir = heapDumpDir;
     }
 
     public static Config fromEnv(Map<String, String> env) {
@@ -37,7 +42,13 @@ public final class Config {
         // an LLM cannot opt back in. Defends against sending PII (user IDs, phone, address) to the model.
         boolean bindParamsEnabled =
                 !"false".equalsIgnoreCase(env.getOrDefault("SCOUTER_INCLUDE_BIND_PARAMS", "true").trim());
-        return new Config(host, port, user, password, ZoneId.of(tz), locale, bindParamsEnabled);
+        // Opt-in (default off): a heap dump stops the target JVM while it writes and the hprof carries
+        // live customer data, so create/download must be enabled per collector by the operator.
+        boolean heapDumpEnabled = "true".equalsIgnoreCase(env.getOrDefault("SCOUTER_HEAPDUMP_ENABLED", "false").trim());
+        Path heapDumpDir = Path.of(env.getOrDefault("SCOUTER_HEAPDUMP_DIR",
+                System.getProperty("user.home") + "/scouter-heapdump"));
+        return new Config(host, port, user, password, ZoneId.of(tz), locale, bindParamsEnabled,
+                heapDumpEnabled, heapDumpDir);
     }
 
     /**
@@ -86,6 +97,14 @@ public final class Config {
 
     public boolean bindParamsEnabled() {
         return bindParamsEnabled;
+    }
+
+    public boolean heapDumpEnabled() {
+        return heapDumpEnabled;
+    }
+
+    public Path heapDumpDir() {
+        return heapDumpDir;
     }
 
     @Override
